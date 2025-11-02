@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "name": "TaleNest Tracker",
+  "version": "0.3",
+  "description": "Track your anime, manga, and fiction progress in one cozy place.",
+  "permissions": ["storage", "tabs", "activeTab"],
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "128": "icons/icon128.png"
+    }
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "icons": {
+    "128": "icons/icon128.png"
+  }
+}

@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>TaleNest Tracker</title>
+<link rel="stylesheet" href="popup.css">
+</head>
+<body>
+
+  <!-- Top Tabs -->
+  <div id="top-bar">
+    <div id="tabs">
+      <button class="tab" data-tab="anime">ANIME</button>
+      <button class="tab" data-tab="manga">MANGA</button>
+      <button class="tab" data-tab="fiction">FICTION</button>
+      <button class="tab settings-tab">⚙️</button>
+    </div>
+  </div>
+
+  <!-- Scrollable Content -->
+  <div id="content">
+    <div id="anime" class="tab-content"></div>
+    <div id="manga" class="tab-content"></div>
+    <div id="fiction" class="tab-content"></div>
+  </div>
+
+  <!-- SETTINGS POPUP -->
+  <div id="settings-popup" class="hidden">
+    <div class="settings-header">
+      Settings <span id="close-settings">✖</span>
+    </div>
+    <div class="settings-body">
+      <div class="settings-section">
+        <label for="settings-tab-select">Select Tab:</label>
+        <select id="settings-tab-select">
+          <option value="anime">ANIME</option>
+          <option value="manga">MANGA</option>
+          <option value="fiction">FICTION</option>
+        </select>
+      </div>
+      <div class="settings-section">
+        <label for="new-category-input">New Category:</label>
+        <input type="text" id="new-category-input" placeholder="Category name">
+        <button id="add-category-btn">Add</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- BOTTOM ACTION BAR -->
+  <div id="bottom-bar">
+    <button id="add-btn">+</button>
+    <div id="search-container">
+      <input type="text" id="search-input" placeholder="Search titles...">
+      <button id="search-clear">×</button>
+    </div>
+  </div>
+
+<script src="popup.js"></script>
+</body>
+</html>
