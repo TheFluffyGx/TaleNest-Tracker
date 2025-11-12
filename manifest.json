@@ -3,7 +3,7 @@
   "name": "TaleNest Tracker",
   "version": "0.3",
   "description": "Track your anime, manga, and fiction progress in one cozy place.",
-  "permissions": ["storage", "tabs", "activeTab"],
+  "permissions": ["storage", "tabs", "activeTab", "scripting"],
   "action": {
     "default_popup": "popup.html",
     "default_icon": {

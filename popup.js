@@ -24,7 +24,8 @@ const Storage = {
 const defaultCategories = {
   anime: ["favorite","watching","completed"],
   manga: ["favorite","reading","completed"],
-  fiction: ["favorite","fanfics","novel","completed"]
+  fiction: ["favorite","fanfics","novel","completed"],
+  misc: ["favorite","watching","completed"]
 };
 
 // ===== State Management =====
@@ -33,10 +34,10 @@ let state = {
   openState: {},
   categories: {},
   entries: {},
+  entryUrls: {},
   defaults: {},
   searchQuery: '',
-  isInitialized: false,
-  hasChanges: false
+  isInitialized: false
 };
 
 // ===== Initialize Extension =====
@@ -45,21 +46,25 @@ async function initializeExtension() {
     // Load all data in one batch operation
     const keys = [
       'lastTab', 'openState',
-      'anime-categories', 'manga-categories', 'fiction-categories',
-      'anime-entries', 'manga-entries', 'fiction-entries',
-      'anime-default', 'manga-default', 'fiction-default'
+      'anime-categories', 'manga-categories', 'fiction-categories', 'misc-categories',
+      'anime-entries', 'manga-entries', 'fiction-entries', 'misc-entries',
+      'anime-urls', 'manga-urls', 'fiction-urls', 'misc-urls',
+      'anime-default', 'manga-default', 'fiction-default', 'misc-default'
     ];
     
     const data = await Storage.getMultiple(keys);
     
     // Initialize defaults if needed
     const updates = {};
-    ['anime','manga','fiction'].forEach(tab => {
+    ['anime','manga','fiction','misc'].forEach(tab => {
       if(!data[tab+'-categories']) {
         updates[tab+'-categories'] = defaultCategories[tab];
       }
       if(!data[tab+'-entries']) {
         updates[tab+'-entries'] = {};
+      }
+      if(!data[tab+'-urls']) {
+        updates[tab+'-urls'] = {};
       }
     });
     
@@ -72,10 +77,11 @@ async function initializeExtension() {
     state.currentTab = data.lastTab || 'anime';
     state.openState = data.openState || {};
     
-    ['anime','manga','fiction'].forEach(tab => {
-      state.categories[tab] = data[tab+'-categories'] || defaultCategories[tab];
+    ['anime','manga','fiction','misc'].forEach(tab => {
+      state.categories[tab] = data[tab+'-categories'] || defaultCategories[tab] || [];
       state.entries[tab] = data[tab+'-entries'] || {};
-      state.defaults[tab] = data[tab+'-default'] || state.categories[tab][0];
+      state.entryUrls[tab] = data[tab+'-urls'] || {};
+      state.defaults[tab] = data[tab+'-default'] || (state.categories[tab] && state.categories[tab][0]);
     });
     
     state.isInitialized = true;
@@ -87,51 +93,6 @@ async function initializeExtension() {
     console.error('Failed to initialize:', error);
     alert('Failed to load data. Please reload the extension.');
   }
-}
-
-// ===== AUTO-EXPORT EVERY 6 HOURS (only if changes detected) =====
-async function autoExportData() {
-  if (!state.hasChanges) {
-    console.log('No changes detected, skipping auto-backup');
-    return;
-  }
-  
-  const data = {
-    categories: state.categories,
-    entries: state.entries,
-    defaults: state.defaults,
-    openState: state.openState,
-    lastTab: state.currentTab
-  };
-  
-  const dataStr = JSON.stringify(data, null, 2);
-  const blob = new Blob([dataStr], {type: 'application/json'});
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `talenest-auto-backup-${new Date().toISOString().split('T')[0]}.json`;
-  a.click();
-  URL.revokeObjectURL(url);
-  
-  state.hasChanges = false;
-  console.log('Auto-backup created');
-}
-
-async function initAutoExport() {
-  const lastExport = await Storage.get('lastAutoExport');
-  const now = Date.now();
-  const sixHours = 6 * 60 * 60 * 1000;
-  
-  if (!lastExport || (now - lastExport) >= sixHours) {
-    autoExportData();
-    await Storage.set('lastAutoExport', now);
-  }
-  
-  // Set interval for next auto-export
-  setInterval(async () => {
-    autoExportData();
-    await Storage.set('lastAutoExport', Date.now());
-  }, sixHours);
 }
 
 // ===== SMART TITLE GROUPING =====
@@ -178,23 +139,31 @@ function findSimilarTitleIndex(entries, newTitle) {
 // ===== Data Functions (with caching) =====
 function getCategories(tab){ return state.categories[tab] || []; }
 function getEntries(tab){ return state.entries[tab] || {}; }
-function getDefaultCategory(tab){ return state.defaults[tab] || getCategories(tab)[0]; }
+function getDefaultCategory(tab){ 
+  if (!state.defaults[tab] && state.categories[tab] && state.categories[tab].length > 0) {
+    state.defaults[tab] = state.categories[tab][0];
+  }
+  return state.defaults[tab] || (state.categories[tab] && state.categories[tab][0]);
+}
 
 async function saveCategories(tab, cats) {
   state.categories[tab] = cats;
-  state.hasChanges = true;
   await Storage.set(tab+'-categories', cats);
 }
 
 async function saveEntries(tab, entries) {
   state.entries[tab] = entries;
-  state.hasChanges = true;
   await Storage.set(tab+'-entries', entries);
+}
+
+async function saveEntryUrls(tab, urls) {
+  if (!state.entryUrls) state.entryUrls = {};
+  state.entryUrls[tab] = urls;
+  await Storage.set(tab+'-urls', urls);
 }
 
 async function setDefaultCategory(tab, cat) {
   state.defaults[tab] = cat;
-  state.hasChanges = true;
   await Storage.set(tab+'-default', cat);
   renderTab(tab);
 }
@@ -440,11 +409,86 @@ function createListItem(tab, cat, item, idx) {
   li.dataset.cat = cat;
   li.style.cursor = 'grab';
   
+  // URL dot button
+  const urlDot = document.createElement('span');
+  urlDot.textContent = '●';
+  urlDot.className = 'url-dot';
+  urlDot.style.fontSize = '20px';
+  urlDot.style.marginRight = '8px';
+  urlDot.style.cursor = 'pointer';
+  urlDot.style.transition = 'all 0.2s';
+  urlDot.style.flexShrink = '0';
+  
+  // Check if URL exists - using title as key
+  const hasUrl = state.entryUrls[tab] && state.entryUrls[tab][item];
+  
+  if (hasUrl) {
+    urlDot.style.color = '#4a90e2';
+    urlDot.style.opacity = '1';
+    urlDot.title = 'Open saved page';
+  } else {
+    urlDot.style.color = '#666';
+    urlDot.style.opacity = '0.3';
+    urlDot.title = 'No URL saved';
+  }
+  
+  urlDot.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (hasUrl) {
+      const url = state.entryUrls[tab][item];
+      chrome.tabs.create({ url: url });
+    }
+  });
+  
+  urlDot.addEventListener('mouseenter', () => {
+    if (hasUrl) {
+      urlDot.style.transform = 'scale(1.3)';
+      urlDot.style.opacity = '1';
+    }
+  });
+  
+  urlDot.addEventListener('mouseleave', () => {
+    urlDot.style.transform = 'scale(1)';
+    if (!hasUrl) {
+      urlDot.style.opacity = '0.3';
+    }
+  });
+  
   const spanText = document.createElement('span');
   spanText.textContent = item;
   spanText.className = 'title-text';
   spanText.style.flex = '1';
   spanText.style.marginRight = '4px';
+  
+  const copyBtn = document.createElement('span');
+  copyBtn.textContent = '📋';
+  copyBtn.className = 'copy';
+  copyBtn.style.cursor = 'pointer';
+  copyBtn.style.opacity = '0.7';
+  copyBtn.style.marginLeft = '6px';
+  copyBtn.style.fontSize = '14px';
+  copyBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    navigator.clipboard.writeText(item).then(() => {
+      // Visual feedback
+      copyBtn.textContent = '✓';
+      copyBtn.style.color = '#4a90e2';
+      setTimeout(() => {
+        copyBtn.textContent = '📋';
+        copyBtn.style.color = '';
+      }, 1000);
+    }).catch(err => {
+      console.error('Failed to copy:', err);
+      copyBtn.textContent = '✗';
+      copyBtn.style.color = '#e74c3c';
+      setTimeout(() => {
+        copyBtn.textContent = '📋';
+        copyBtn.style.color = '';
+      }, 1000);
+    });
+  });
+  copyBtn.addEventListener('mouseenter', () => { copyBtn.style.opacity = '1'; });
+  copyBtn.addEventListener('mouseleave', () => { copyBtn.style.opacity = '0.7'; });
   
   const renameBtn = document.createElement('span');
   renameBtn.textContent = '✏️';
@@ -456,7 +500,9 @@ function createListItem(tab, cat, item, idx) {
   deleteBtn.className = 'delete';
   deleteBtn.addEventListener('click', () => handleItemDelete(tab, cat, idx));
   
+  li.appendChild(urlDot);
   li.appendChild(spanText);
+  li.appendChild(copyBtn);
   li.appendChild(renameBtn);
   li.appendChild(deleteBtn);
   
@@ -489,7 +535,16 @@ function handleItemRename(e, tab, cat, idx, item, li, spanText) {
   const saveEdit = async () => {
     const newVal = input.value.trim();
     if(newVal && newVal !== item){
+      // Update the entry
       state.entries[tab][cat][idx] = newVal;
+      
+      // Transfer URL from old title to new title
+      if (state.entryUrls[tab] && state.entryUrls[tab][item]) {
+        state.entryUrls[tab][newVal] = state.entryUrls[tab][item];
+        delete state.entryUrls[tab][item];
+        await saveEntryUrls(tab, state.entryUrls[tab]);
+      }
+      
       await saveEntries(tab, state.entries[tab]);
     }
     renderTab(tab);
@@ -666,15 +721,203 @@ function formatTitle(title){
   return title;
 }
 
+// ===== EXTRACT EPISODE/CHAPTER FROM URL AND PAGE =====
+async function extractEpisodeInfo(tab) {
+  // Skip extraction for chrome:// and other restricted URLs
+  if (tab.url.startsWith('chrome://') || 
+      tab.url.startsWith('chrome-extension://') || 
+      tab.url.startsWith('about:') ||
+      tab.url.startsWith('edge://')) {
+    return { title: tab.title, episodeNum: null, type: null };
+  }
+  
+  try {
+    const [result] = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: () => {
+        const url = window.location.href;
+        const title = document.title;
+        const bodyText = document.body.innerText.substring(0, 500);
+        
+        const patterns = [
+          /[?&]ep=(\d+)/i,
+          /[?&]episode=(\d+)/i,
+          /[?&]ch=(\d+)/i,
+          /[?&]chapter=(\d+)/i,
+          /episode[-_](\d+)/i,
+          /ep[-_](\d+)/i,
+          /-e(\d+)/i,
+          /\/e(\d+)/i,
+          /chapter[-_](\d+)/i,
+          /ch[-_](\d+)/i,
+          /episode\s*(\d+)/i,
+          /ep\.\s*(\d+)/i,
+          /chapter\s*(\d+)/i,
+          /ch\.\s*(\d+)/i,
+          /s(\d+)e(\d+)/i,
+          /season\s*(\d+)\s*episode\s*(\d+)/i,
+          /v(\d+)\s*ch(\d+)/i,
+          /vol\.\s*(\d+)\s*ch\.\s*(\d+)/i
+        ];
+        
+        let episodeNum = null;
+        let seasonNum = null;
+        let volumeNum = null;
+        let type = null;
+        
+        for (const pattern of patterns) {
+          const match = url.match(pattern);
+          if (match) {
+            if (pattern.source.includes('season')) {
+              seasonNum = match[1];
+              episodeNum = match[2];
+              type = 'season-episode';
+              break;
+            } else if (pattern.source.includes('s(') && pattern.source.includes('e(')) {
+              seasonNum = match[1];
+              episodeNum = match[2];
+              type = 'season-episode';
+              break;
+            } else if (pattern.source.includes('v(') || pattern.source.includes('vol')) {
+              volumeNum = match[1];
+              episodeNum = match[2];
+              type = 'volume-chapter';
+              break;
+            } else if (pattern.source.includes('ep')) {
+              episodeNum = match[1];
+              type = 'episode';
+              break;
+            } else if (pattern.source.includes('chapter') || pattern.source.includes('ch')) {
+              episodeNum = match[1];
+              type = 'chapter';
+              break;
+            }
+          }
+        }
+        
+        if (!episodeNum) {
+          for (const pattern of patterns) {
+            const match = title.match(pattern);
+            if (match) {
+              if (pattern.source.includes('season')) {
+                seasonNum = match[1];
+                episodeNum = match[2];
+                type = 'season-episode';
+                break;
+              } else if (pattern.source.includes('s(') && pattern.source.includes('e(')) {
+                seasonNum = match[1];
+                episodeNum = match[2];
+                type = 'season-episode';
+                break;
+              } else if (pattern.source.includes('v(') || pattern.source.includes('vol')) {
+                volumeNum = match[1];
+                episodeNum = match[2];
+                type = 'volume-chapter';
+                break;
+              } else if (pattern.source.includes('ep')) {
+                episodeNum = match[1];
+                type = 'episode';
+                break;
+              } else if (pattern.source.includes('chapter') || pattern.source.includes('ch')) {
+                episodeNum = match[1];
+                type = 'chapter';
+                break;
+              }
+            }
+          }
+        }
+        
+        if (!episodeNum) {
+          for (const pattern of patterns) {
+            const match = bodyText.match(pattern);
+            if (match) {
+              if (pattern.source.includes('chapter') || pattern.source.includes('ch')) {
+                episodeNum = match[1];
+                type = 'chapter';
+                break;
+              } else if (pattern.source.includes('ep')) {
+                episodeNum = match[1];
+                type = 'episode';
+                break;
+              }
+            }
+          }
+        }
+        
+        return { title, url, episodeNum, seasonNum, volumeNum, type };
+      }
+    });
+    
+    return result.result;
+  } catch (error) {
+    console.error('Failed to extract episode info:', error);
+    // Return basic info if extraction fails
+    return { title: tab.title, episodeNum: null, type: null };
+  }
+}
+
+// ===== SMART TITLE BUILDER =====
+function buildSmartTitle(info) {
+  let title = info.title;
+  
+  // Remove "Watch" prefix and streaming site names
+  title = title.replace(/^(Watch|Read|Stream)\s+/i, '');
+  title = title.replace(/\s*[-|]\s*(Crunchyroll|Funimation|Netflix|Hulu|MAL|MyAnimeList|MangaDex|Anicrush|AnimeDao|GogoAnime|9anime|Zoro\.to|AnimeFlix).*$/i, '');
+  title = title.replace(/\s+(Online|Free|HD|Dubbed|Subbed|Sub|Dub)\s*(on|at)?\s*.*$/i, '');
+  
+  // Extract season number from title if present
+  const seasonMatch = title.match(/Season\s*(\d+)/i);
+  let seasonNum = info.seasonNum;
+  if (seasonMatch && !seasonNum) {
+    seasonNum = seasonMatch[1];
+  }
+  
+  // If we found episode/chapter info, append it in a clean format
+  if (info.episodeNum) {
+    // Remove any existing episode/chapter info from title
+    title = title.replace(/\s*[-–]\s*(Episode|EP|Chapter|CH|Ch)\s*\d+.*/i, '');
+    title = title.replace(/\s*S\d+\s*E\d+.*/i, '');
+    title = title.replace(/\s*Season\s*\d+.*/i, '');
+    title = title.replace(/\s*\d+\s*$/, '');
+    
+    title = title.trim();
+    
+    // Add formatted episode/chapter info
+    if (seasonNum) {
+      title += ` S${seasonNum} - E${info.episodeNum}`;
+    } else if (info.type === 'volume-chapter' && info.volumeNum) {
+      title += ` V${info.volumeNum} CH${info.episodeNum}`;
+    } else if (info.type === 'chapter') {
+      title += ` Chapter ${info.episodeNum}`;
+    } else if (info.type === 'episode' || info.episodeNum) {
+      title += ` Episode ${info.episodeNum}`;
+    }
+  }
+  
+  return formatTitle(title);
+}
+
 // ===== ADD ENTRY BUTTON =====
-document.getElementById('add-btn').addEventListener('click', () => {
+document.getElementById('add-btn').addEventListener('click', async () => {
   const tab = state.currentTab;
   const defaultCat = state.defaults[tab];
 
   chrome.tabs.query({active:true, currentWindow:true}, async tabs => {
-    let title = tabs[0]?.title || '';
-    if(title) title = formatTitle(title);
+    const currentTab = tabs[0];
+    if (!currentTab) return;
+    
+    // Extract episode/chapter info from URL and page
+    const info = await extractEpisodeInfo(currentTab);
+    const title = buildSmartTitle(info);
+    const url = currentTab.url;
+    
     if(!state.entries[tab][defaultCat]) state.entries[tab][defaultCat] = [];
+    
+    // Initialize URL storage for this tab if needed
+    if (!state.entryUrls[tab]) state.entryUrls[tab] = {};
+    
+    // Save URL using title as key BEFORE adding to entries
+    state.entryUrls[tab][title] = url;
     
     // Smart grouping: find similar title and insert after it
     const similarIndex = findSimilarTitleIndex(state.entries[tab][defaultCat], title);
@@ -690,7 +933,9 @@ document.getElementById('add-btn').addEventListener('click', () => {
       state.entries[tab][defaultCat].push(title || 'New Entry');
     }
     
+    // Save both entries and URLs
     await saveEntries(tab, state.entries[tab]);
+    await saveEntryUrls(tab, state.entryUrls[tab]);
     
     // Make sure category is open
     if(!state.openState[tab + '-' + defaultCat]) {
@@ -741,6 +986,7 @@ exportBtn.addEventListener('click', async () => {
   const data = {
     categories: state.categories,
     entries: state.entries,
+    entryUrls: state.entryUrls,
     defaults: state.defaults,
     openState: state.openState,
     lastTab: state.currentTab
@@ -787,6 +1033,7 @@ fileInput.addEventListener('change', (e) => {
         // Update state
         state.categories = data.categories;
         state.entries = data.entries;
+        state.entryUrls = data.entryUrls || {};
         state.defaults = data.defaults || {};
         state.openState = data.openState || {};
         state.currentTab = data.lastTab || 'anime';
@@ -797,9 +1044,10 @@ fileInput.addEventListener('change', (e) => {
           'lastTab': state.currentTab
         };
         
-        ['anime','manga','fiction'].forEach(tab => {
+        ['anime','manga','fiction','misc'].forEach(tab => {
           updates[tab+'-categories'] = state.categories[tab];
           updates[tab+'-entries'] = state.entries[tab];
+          updates[tab+'-urls'] = state.entryUrls[tab] || {};
           updates[tab+'-default'] = state.defaults[tab];
         });
         
@@ -844,6 +1092,13 @@ addCatBtn.addEventListener('click', async () => {
   if(!name) return;
   const tab = tabSelect.value;
   let cats = state.categories[tab];
+  
+  // Initialize categories if undefined
+  if (!cats) {
+    cats = [];
+    state.categories[tab] = cats;
+  }
+  
   if(!cats.includes(name)) {
     cats.push(name);
     await saveCategories(tab, cats);
@@ -1002,4 +1257,3 @@ function clearSearch() {
 
 // ===== INITIALIZE ON LOAD =====
 initializeExtension();
-initAutoExport();
