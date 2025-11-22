@@ -35,6 +35,8 @@ let state = {
   categories: {},
   entries: {},
   entryUrls: {},
+  entryColors: {},
+  savedColors: [],
   defaults: {},
   searchQuery: '',
   isInitialized: false
@@ -45,10 +47,11 @@ async function initializeExtension() {
   try {
     // Load all data in one batch operation
     const keys = [
-      'lastTab', 'openState',
+      'lastTab', 'openState', 'savedColors',
       'anime-categories', 'manga-categories', 'fiction-categories', 'misc-categories',
       'anime-entries', 'manga-entries', 'fiction-entries', 'misc-entries',
       'anime-urls', 'manga-urls', 'fiction-urls', 'misc-urls',
+      'anime-colors', 'manga-colors', 'fiction-colors', 'misc-colors',
       'anime-default', 'manga-default', 'fiction-default', 'misc-default'
     ];
     
@@ -66,6 +69,9 @@ async function initializeExtension() {
       if(!data[tab+'-urls']) {
         updates[tab+'-urls'] = {};
       }
+      if(!data[tab+'-colors']) {
+        updates[tab+'-colors'] = {};
+      }
     });
     
     if(Object.keys(updates).length > 0) {
@@ -76,11 +82,13 @@ async function initializeExtension() {
     // Load state
     state.currentTab = data.lastTab || 'anime';
     state.openState = data.openState || {};
+    state.savedColors = data.savedColors || [];
     
     ['anime','manga','fiction','misc'].forEach(tab => {
       state.categories[tab] = data[tab+'-categories'] || defaultCategories[tab] || [];
       state.entries[tab] = data[tab+'-entries'] || {};
       state.entryUrls[tab] = data[tab+'-urls'] || {};
+      state.entryColors[tab] = data[tab+'-colors'] || {};
       state.defaults[tab] = data[tab+'-default'] || (state.categories[tab] && state.categories[tab][0]);
     });
     
@@ -95,7 +103,7 @@ async function initializeExtension() {
   }
 }
 
-// ===== SMART TITLE GROUPING =====
+// ===== SMART TITLE GROUPING (SINGLE CATEGORY) =====
 function findSimilarTitleIndex(entries, newTitle) {
   // Extract base title by removing common patterns
   const baseTitle = newTitle
@@ -136,6 +144,54 @@ function findSimilarTitleIndex(entries, newTitle) {
   return lastIndex;
 }
 
+// ===== NEW: CROSS-CATEGORY SMART GROUPING =====
+function findSimilarTitleInAllCategories(tab, newTitle) {
+  const baseTitle = newTitle
+    .replace(/Chapter\s+\d+/i, '')
+    .replace(/Episode\s+\d+/i, '')
+    .replace(/E\d+/i, '')
+    .replace(/CH\s*\d+/i, '')
+    .replace(/V\d+/i, '')
+    .replace(/S\d+/i, '')
+    .replace(/\s*-\s*[A-Z-]+\s*$/i, '')
+    .trim()
+    .toLowerCase();
+  
+  const entries = state.entries[tab];
+  const matches = [];
+  
+  // Search through all categories
+  Object.keys(entries).forEach(category => {
+    const categoryEntries = entries[category];
+    
+    for (let i = categoryEntries.length - 1; i >= 0; i--) {
+      const entryBase = categoryEntries[i]
+        .replace(/Chapter\s+\d+/i, '')
+        .replace(/Episode\s+\d+/i, '')
+        .replace(/E\d+/i, '')
+        .replace(/CH\s*\d+/i, '')
+        .replace(/V\d+/i, '')
+        .replace(/S\d+/i, '')
+        .replace(/\s*-\s*[A-Z-]+\s*$/i, '')
+        .trim()
+        .toLowerCase();
+      
+      if (entryBase === baseTitle || 
+          (baseTitle.length > 10 && entryBase.includes(baseTitle)) ||
+          (baseTitle.length > 10 && baseTitle.includes(entryBase))) {
+        matches.push({
+          category: category,
+          index: i,
+          title: categoryEntries[i]
+        });
+        break; // Only get last match per category
+      }
+    }
+  });
+  
+  return matches;
+}
+
 // ===== Data Functions (with caching) =====
 function getCategories(tab){ return state.categories[tab] || []; }
 function getEntries(tab){ return state.entries[tab] || {}; }
@@ -160,6 +216,12 @@ async function saveEntryUrls(tab, urls) {
   if (!state.entryUrls) state.entryUrls = {};
   state.entryUrls[tab] = urls;
   await Storage.set(tab+'-urls', urls);
+}
+
+async function saveEntryColors(tab, colors) {
+  if (!state.entryColors) state.entryColors = {};
+  state.entryColors[tab] = colors;
+  await Storage.set(tab+'-colors', colors);
 }
 
 async function setDefaultCategory(tab, cat) {
@@ -401,6 +463,444 @@ function createCategoryList(tab, cat, items) {
   return ul;
 }
 
+// ===== NEW: Show Color Picker =====
+function showColorPicker(tab, cat, idx, item, li) {
+  // Remove any existing color pickers
+  document.querySelectorAll('.color-picker-popup').forEach(el => el.remove());
+  
+  const picker = document.createElement('div');
+  picker.className = 'color-picker-popup';
+  picker.style.cssText = `
+    position: fixed;
+    background: #2a2b33;
+    border-radius: 10px;
+    padding: 16px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.6);
+    z-index: 9999;
+    width: 230px;
+    border: 1px solid #3a3b44;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+  `;
+  
+  // Get current color
+  const colorKey = `${cat}:${item}`;
+  const currentColor = (state.entryColors[tab] && state.entryColors[tab][colorKey]) || '#4a90e2';
+  
+  // Convert hex to HSL
+  function hexToHSL(hex) {
+    const r = parseInt(hex.slice(1, 3), 16) / 255;
+    const g = parseInt(hex.slice(3, 5), 16) / 255;
+    const b = parseInt(hex.slice(5, 7), 16) / 255;
+    
+    const max = Math.max(r, g, b);
+    const min = Math.min(r, g, b);
+    let h, s, l = (max + min) / 2;
+    
+    if (max === min) {
+      h = s = 0;
+    } else {
+      const d = max - min;
+      s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+      switch (max) {
+        case r: h = ((g - b) / d + (g < b ? 6 : 0)) / 6; break;
+        case g: h = ((b - r) / d + 2) / 6; break;
+        case b: h = ((r - g) / d + 4) / 6; break;
+      }
+    }
+    
+    return { h: h * 360, s: s * 100, l: l * 100 };
+  }
+  
+  // Convert HSL to hex
+  function hslToHex(h, s, l) {
+    s /= 100;
+    l /= 100;
+    const k = n => (n + h / 30) % 12;
+    const a = s * Math.min(l, 1 - l);
+    const f = n => l - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1)));
+    const toHex = x => Math.round(x * 255).toString(16).padStart(2, '0');
+    return `#${toHex(f(0))}${toHex(f(8))}${toHex(f(4))}`;
+  }
+  
+  let currentHSL = hexToHSL(currentColor);
+  
+  // Circular color wheel canvas
+  const wheelCanvas = document.createElement('canvas');
+  wheelCanvas.width = 160;
+  wheelCanvas.height = 160;
+  wheelCanvas.style.cssText = `
+    display: block;
+    margin: 0 auto 12px auto;
+    cursor: crosshair;
+    border-radius: 50%;
+  `;
+  
+  const ctx = wheelCanvas.getContext('2d');
+  
+  function drawColorWheel(lightness) {
+    const centerX = 80;
+    const centerY = 80;
+    const radius = 80;
+    
+    for (let angle = 0; angle < 360; angle++) {
+      for (let r = 0; r < radius; r++) {
+        const saturation = (r / radius) * 100;
+        const color = hslToHex(angle, saturation, lightness);
+        
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        const rad = (angle * Math.PI) / 180;
+        const x = centerX + r * Math.cos(rad);
+        const y = centerY + r * Math.sin(rad);
+        ctx.arc(x, y, 1.5, 0, 2 * Math.PI);
+        ctx.fill();
+      }
+    }
+  }
+  
+  drawColorWheel(currentHSL.l);
+  
+  // Lightness slider
+  const lightnessContainer = document.createElement('div');
+  lightnessContainer.style.cssText = `
+    margin-bottom: 12px;
+    width: 160px;
+  `;
+  
+  const lightnessLabel = document.createElement('div');
+  lightnessLabel.textContent = 'Brightness';
+  lightnessLabel.style.cssText = `
+    font-size: 11px;
+    color: #bbb;
+    margin-bottom: 4px;
+    text-align: center;
+  `;
+  
+  const lightnessSlider = document.createElement('input');
+  lightnessSlider.type = 'range';
+  lightnessSlider.min = '20';
+  lightnessSlider.max = '80';
+  lightnessSlider.value = currentHSL.l;
+  lightnessSlider.style.cssText = `
+    width: 100%;
+    cursor: pointer;
+  `;
+  
+  lightnessSlider.addEventListener('input', (e) => {
+    currentHSL.l = parseFloat(e.target.value);
+    drawColorWheel(currentHSL.l);
+    updatePreview();
+  });
+  
+  lightnessContainer.appendChild(lightnessLabel);
+  lightnessContainer.appendChild(lightnessSlider);
+  
+  // Color preview
+  const previewContainer = document.createElement('div');
+  previewContainer.style.cssText = `
+    margin-bottom: 12px;
+    width: 160px;
+  `;
+  
+  const previewLabel = document.createElement('div');
+  previewLabel.textContent = 'Preview';
+  previewLabel.style.cssText = `
+    font-size: 11px;
+    color: #bbb;
+    margin-bottom: 4px;
+    text-align: center;
+  `;
+  
+  const colorPreview = document.createElement('div');
+  colorPreview.style.cssText = `
+    width: 100%;
+    height: 35px;
+    border-radius: 6px;
+    border: 2px solid #3a3b44;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #fff;
+    font-size: 12px;
+    font-weight: 600;
+    text-shadow: 0 1px 3px rgba(0,0,0,0.5);
+  `;
+  
+  function updatePreview() {
+    const hex = hslToHex(currentHSL.h, currentHSL.s, currentHSL.l);
+    colorPreview.style.background = hex;
+    colorPreview.textContent = hex.toUpperCase();
+  }
+  
+  updatePreview();
+  
+  previewContainer.appendChild(previewLabel);
+  previewContainer.appendChild(colorPreview);
+  
+  // Handle wheel clicks
+  wheelCanvas.addEventListener('click', (e) => {
+    const rect = wheelCanvas.getBoundingClientRect();
+    const x = e.clientX - rect.left - 80;
+    const y = e.clientY - rect.top - 80;
+    
+    const distance = Math.sqrt(x * x + y * y);
+    if (distance > 80) return; // Outside circle
+    
+    currentHSL.h = (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+    currentHSL.s = Math.min((distance / 80) * 100, 100);
+    
+    updatePreview();
+  });
+  
+  // Saved Colors Section
+  if (state.savedColors.length > 0) {
+    const savedTitle = document.createElement('div');
+    savedTitle.textContent = '★ Saved Colors';
+    savedTitle.style.cssText = `
+      font-size: 11px;
+      font-weight: 600;
+      color: #bbb;
+      margin-bottom: 6px;
+      text-align: center;
+    `;
+    picker.appendChild(savedTitle);
+    
+    const savedColorsContainer = document.createElement('div');
+    savedColorsContainer.style.cssText = `
+      display: flex;
+      gap: 5px;
+      flex-wrap: wrap;
+      justify-content: center;
+      margin-bottom: 12px;
+      max-height: 50px;
+      overflow-y: auto;
+    `;
+    
+    state.savedColors.forEach((savedColor, savedIdx) => {
+      const savedBtn = document.createElement('button');
+      savedBtn.style.cssText = `
+        width: 28px;
+        height: 28px;
+        border-radius: 5px;
+        border: 2px solid #3a3b44;
+        cursor: pointer;
+        transition: all 0.2s;
+        background: ${savedColor};
+      `;
+      savedBtn.title = `Click: Use ${savedColor}\nRight-click: Delete`;
+      
+      // Click to use color AND auto-apply
+      savedBtn.addEventListener('click', async () => {
+        currentHSL = hexToHSL(savedColor);
+        lightnessSlider.value = currentHSL.l;
+        drawColorWheel(currentHSL.l);
+        updatePreview();
+        
+        // AUTO-APPLY: Save color immediately
+        if (!state.entryColors[tab]) state.entryColors[tab] = {};
+        state.entryColors[tab][colorKey] = savedColor;
+        await saveEntryColors(tab, state.entryColors[tab]);
+        
+        // Update the list item background
+        applyColorToListItem(li, savedColor);
+        
+        // Remove picker
+        picker.remove();
+      });
+      
+      // Right-click to delete
+      savedBtn.addEventListener('contextmenu', async (e) => {
+        e.preventDefault();
+        if (confirm(`Delete color ${savedColor}?`)) {
+          state.savedColors.splice(savedIdx, 1);
+          await Storage.set('savedColors', state.savedColors);
+          savedBtn.remove();
+          if (state.savedColors.length === 0) {
+            savedTitle.remove();
+            savedColorsContainer.remove();
+          }
+        }
+      });
+      
+      savedBtn.addEventListener('mouseenter', () => {
+        savedBtn.style.transform = 'scale(1.15)';
+        savedBtn.style.borderColor = '#4a90e2';
+      });
+      
+      savedBtn.addEventListener('mouseleave', () => {
+        savedBtn.style.transform = 'scale(1)';
+        savedBtn.style.borderColor = '#3a3b44';
+      });
+      
+      savedColorsContainer.appendChild(savedBtn);
+    });
+    
+    picker.appendChild(savedColorsContainer);
+  }
+  
+  // Assemble picker
+  picker.appendChild(wheelCanvas);
+  picker.appendChild(lightnessContainer);
+  picker.appendChild(previewContainer);
+  
+  // Buttons container
+  const buttonsContainer = document.createElement('div');
+  buttonsContainer.style.cssText = `
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 6px;
+    width: 160px;
+  `;
+  
+  // Save Color button
+  const saveColorBtn = document.createElement('button');
+  saveColorBtn.textContent = '💾';
+  saveColorBtn.title = 'Save to favorites';
+  saveColorBtn.style.cssText = `
+    padding: 8px;
+    border-radius: 5px;
+    border: none;
+    background: #9b59b6;
+    color: #fff;
+    font-size: 14px;
+    cursor: pointer;
+    transition: all 0.2s;
+    width: 100%;
+  `;
+  saveColorBtn.addEventListener('mouseenter', () => {
+    saveColorBtn.style.background = '#8e44ad';
+    saveColorBtn.style.transform = 'scale(1.05)';
+  });
+  saveColorBtn.addEventListener('mouseleave', () => {
+    saveColorBtn.style.background = '#9b59b6';
+    saveColorBtn.style.transform = 'scale(1)';
+  });
+  saveColorBtn.addEventListener('click', async () => {
+    const colorToSave = hslToHex(currentHSL.h, currentHSL.s, currentHSL.l);
+    if (!state.savedColors.includes(colorToSave)) {
+      state.savedColors.push(colorToSave);
+      await Storage.set('savedColors', state.savedColors);
+      saveColorBtn.textContent = '✓';
+      setTimeout(() => {
+        saveColorBtn.textContent = '💾';
+      }, 1000);
+    }
+  });
+  
+  // Apply button
+  const applyBtn = document.createElement('button');
+  applyBtn.textContent = '✓';
+  applyBtn.title = 'Apply color';
+  applyBtn.style.cssText = `
+    padding: 8px;
+    border-radius: 5px;
+    border: none;
+    background: #27ae60;
+    color: #fff;
+    font-size: 14px;
+    font-weight: bold;
+    cursor: pointer;
+    transition: all 0.2s;
+    width: 100%;
+  `;
+  applyBtn.addEventListener('mouseenter', () => {
+    applyBtn.style.background = '#229954';
+    applyBtn.style.transform = 'scale(1.05)';
+  });
+  applyBtn.addEventListener('mouseleave', () => {
+    applyBtn.style.background = '#27ae60';
+    applyBtn.style.transform = 'scale(1)';
+  });
+  applyBtn.addEventListener('click', async () => {
+    const selectedColor = hslToHex(currentHSL.h, currentHSL.s, currentHSL.l);
+    
+    // Save color
+    if (!state.entryColors[tab]) state.entryColors[tab] = {};
+    state.entryColors[tab][colorKey] = selectedColor;
+    await saveEntryColors(tab, state.entryColors[tab]);
+    
+    // Update the list item background
+    applyColorToListItem(li, selectedColor);
+    
+    // Remove picker
+    picker.remove();
+  });
+  
+  // Remove button
+  const removeBtn = document.createElement('button');
+  removeBtn.textContent = '✖';
+  removeBtn.title = 'Remove color';
+  removeBtn.style.cssText = `
+    padding: 8px;
+    border-radius: 5px;
+    border: none;
+    background: #e74c3c;
+    color: #fff;
+    font-size: 14px;
+    font-weight: bold;
+    cursor: pointer;
+    transition: all 0.2s;
+    width: 100%;
+  `;
+  removeBtn.addEventListener('mouseenter', () => {
+    removeBtn.style.background = '#c0392b';
+    removeBtn.style.transform = 'scale(1.05)';
+  });
+  removeBtn.addEventListener('mouseleave', () => {
+    removeBtn.style.background = '#e74c3c';
+    removeBtn.style.transform = 'scale(1)';
+  });
+  removeBtn.addEventListener('click', async () => {
+    // Remove color
+    if (state.entryColors[tab] && state.entryColors[tab][colorKey]) {
+      delete state.entryColors[tab][colorKey];
+      await saveEntryColors(tab, state.entryColors[tab]);
+    }
+    
+    // Update the list item background
+    applyColorToListItem(li, null);
+    
+    // Remove picker
+    picker.remove();
+  });
+  
+  buttonsContainer.appendChild(saveColorBtn);
+  buttonsContainer.appendChild(applyBtn);
+  buttonsContainer.appendChild(removeBtn);
+  picker.appendChild(buttonsContainer);
+  
+  // Position picker in center of screen
+  picker.style.position = 'fixed';
+  picker.style.top = '50%';
+  picker.style.left = '50%';
+  picker.style.transform = 'translate(-50%, -50%)';
+  
+  document.body.appendChild(picker);
+  
+  // Close picker when clicking outside
+  setTimeout(() => {
+    const closeHandler = (e) => {
+      if (!picker.contains(e.target)) {
+        picker.remove();
+        document.removeEventListener('click', closeHandler);
+      }
+    };
+    document.addEventListener('click', closeHandler);
+  }, 100);
+}
+
+// ===== NEW: Apply Color to List Item =====
+function applyColorToListItem(li, color) {
+  if (color) {
+    // Subtle gradient: 30% color at start, fades to UI theme by 45%
+    li.style.background = `linear-gradient(90deg, ${color}4D 0%, #1f2028 45%)`;
+  } else {
+    li.style.background = '#1f2028';
+  }
+}
+
 // ===== Create List Item =====
 function createListItem(tab, cat, item, idx) {
   const li = document.createElement('li');
@@ -408,6 +908,13 @@ function createListItem(tab, cat, item, idx) {
   li.dataset.idx = idx;
   li.dataset.cat = cat;
   li.style.cursor = 'grab';
+  
+  // Apply saved color if exists
+  const colorKey = `${cat}:${item}`;
+  const savedColor = state.entryColors[tab] && state.entryColors[tab][colorKey];
+  if (savedColor) {
+    applyColorToListItem(li, savedColor);
+  }
   
   // URL dot button
   const urlDot = document.createElement('span');
@@ -459,6 +966,29 @@ function createListItem(tab, cat, item, idx) {
   spanText.className = 'title-text';
   spanText.style.flex = '1';
   spanText.style.marginRight = '4px';
+  spanText.style.cursor = 'text';
+  
+  // DOUBLE-CLICK TO RENAME
+  spanText.addEventListener('dblclick', (e) => {
+    e.stopPropagation();
+    handleItemRename(e, tab, cat, idx, item, li, spanText);
+  });
+  
+  // Color picker button
+  const colorBtn = document.createElement('span');
+  colorBtn.textContent = '🎨';
+  colorBtn.className = 'color-btn';
+  colorBtn.style.cursor = 'pointer';
+  colorBtn.style.opacity = '0.7';
+  colorBtn.style.marginLeft = '6px';
+  colorBtn.style.fontSize = '14px';
+  colorBtn.title = 'Change color';
+  colorBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    showColorPicker(tab, cat, idx, item, li);
+  });
+  colorBtn.addEventListener('mouseenter', () => { colorBtn.style.opacity = '1'; });
+  colorBtn.addEventListener('mouseleave', () => { colorBtn.style.opacity = '0.7'; });
   
   const copyBtn = document.createElement('span');
   copyBtn.textContent = '📋';
@@ -490,20 +1020,18 @@ function createListItem(tab, cat, item, idx) {
   copyBtn.addEventListener('mouseenter', () => { copyBtn.style.opacity = '1'; });
   copyBtn.addEventListener('mouseleave', () => { copyBtn.style.opacity = '0.7'; });
   
-  const renameBtn = document.createElement('span');
-  renameBtn.textContent = '✏️';
-  renameBtn.className = 'rename';
-  renameBtn.addEventListener('click', (e) => handleItemRename(e, tab, cat, idx, item, li, spanText));
-  
   const deleteBtn = document.createElement('span');
   deleteBtn.textContent = '✖';
   deleteBtn.className = 'delete';
-  deleteBtn.addEventListener('click', () => handleItemDelete(tab, cat, idx));
+  deleteBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    handleItemDelete(tab, cat, idx, item);
+  });
   
   li.appendChild(urlDot);
   li.appendChild(spanText);
+  li.appendChild(colorBtn);
   li.appendChild(copyBtn);
-  li.appendChild(renameBtn);
   li.appendChild(deleteBtn);
   
   return li;
@@ -535,6 +1063,15 @@ function handleItemRename(e, tab, cat, idx, item, li, spanText) {
   const saveEdit = async () => {
     const newVal = input.value.trim();
     if(newVal && newVal !== item){
+      // Update color key if exists
+      const oldColorKey = `${cat}:${item}`;
+      const newColorKey = `${cat}:${newVal}`;
+      if (state.entryColors[tab] && state.entryColors[tab][oldColorKey]) {
+        state.entryColors[tab][newColorKey] = state.entryColors[tab][oldColorKey];
+        delete state.entryColors[tab][oldColorKey];
+        await saveEntryColors(tab, state.entryColors[tab]);
+      }
+      
       // Update the entry
       state.entries[tab][cat][idx] = newVal;
       
@@ -562,7 +1099,14 @@ function handleItemRename(e, tab, cat, idx, item, li, spanText) {
 }
 
 // ===== Handle Item Delete =====
-async function handleItemDelete(tab, cat, idx) {
+async function handleItemDelete(tab, cat, idx, item) {
+  // Remove color if exists
+  const colorKey = `${cat}:${item}`;
+  if (state.entryColors[tab] && state.entryColors[tab][colorKey]) {
+    delete state.entryColors[tab][colorKey];
+    await saveEntryColors(tab, state.entryColors[tab]);
+  }
+  
   state.entries[tab][cat].splice(idx, 1);
   await saveEntries(tab, state.entries[tab]);
   renderTab(tab);
@@ -875,7 +1419,7 @@ function buildSmartTitle(info) {
   // If we found episode/chapter info, append it in a clean format
   if (info.episodeNum) {
     // Remove any existing episode/chapter info from title
-    title = title.replace(/\s*[-–]\s*(Episode|EP|Chapter|CH|Ch)\s*\d+.*/i, '');
+    title = title.replace(/\s*[-—]\s*(Episode|EP|Chapter|CH|Ch)\s*\d+.*/i, '');
     title = title.replace(/\s*S\d+\s*E\d+.*/i, '');
     title = title.replace(/\s*Season\s*\d+.*/i, '');
     title = title.replace(/\s*\d+\s*$/, '');
@@ -897,7 +1441,240 @@ function buildSmartTitle(info) {
   return formatTitle(title);
 }
 
-// ===== ADD ENTRY BUTTON =====
+// ===== NEW: SHOW CATEGORY CHOICE DIALOG =====
+function showCategoryChoiceDialog(tab, title, url, matches) {
+  // Create overlay
+  const overlay = document.createElement('div');
+  overlay.style.cssText = `
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.7);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 10000;
+  `;
+  
+  // Create dialog
+  const dialog = document.createElement('div');
+  dialog.style.cssText = `
+    background: #2a2b33;
+    border-radius: 12px;
+    padding: 20px;
+    max-width: 380px;
+    width: 90%;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+  `;
+  
+  // Title
+  const dialogTitle = document.createElement('div');
+  dialogTitle.textContent = '🔍 Similar Title Found!';
+  dialogTitle.style.cssText = `
+    font-size: 18px;
+    font-weight: bold;
+    margin-bottom: 12px;
+    color: #4a90e2;
+  `;
+  
+  // Message
+  const message = document.createElement('div');
+  message.style.cssText = `
+    margin-bottom: 16px;
+    color: #eee;
+    font-size: 14px;
+    line-height: 1.5;
+  `;
+  
+  const truncatedTitle = title.length > 50 ? title.substring(0, 50) + '...' : title;
+  message.innerHTML = `
+    <div style="margin-bottom: 8px;">Adding: <strong>${truncatedTitle}</strong></div>
+    <div style="color: #bbb;">Found similar title in:</div>
+  `;
+  
+  // Matches list
+  const matchesList = document.createElement('div');
+  matchesList.style.cssText = `
+    margin: 12px 0;
+    max-height: 150px;
+    overflow-y: auto;
+  `;
+  
+  matches.forEach(match => {
+    const matchItem = document.createElement('div');
+    matchItem.style.cssText = `
+      background: #1f2028;
+      padding: 8px 12px;
+      margin-bottom: 6px;
+      border-radius: 6px;
+      font-size: 13px;
+    `;
+    matchItem.innerHTML = `
+      <div style="color: #4a90e2; font-weight: 600;">${match.category.toUpperCase()}</div>
+      <div style="color: #aaa; margin-top: 4px;">${match.title.length > 40 ? match.title.substring(0, 40) + '...' : match.title}</div>
+    `;
+    matchesList.appendChild(matchItem);
+  });
+  
+  // Buttons container
+  const buttonsContainer = document.createElement('div');
+  buttonsContainer.style.cssText = `
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-top: 16px;
+  `;
+  
+  // For each match, create a button
+  matches.forEach(match => {
+    const btn = document.createElement('button');
+    btn.textContent = `Add to ${match.category.toUpperCase()}`;
+    btn.style.cssText = `
+      padding: 10px;
+      border-radius: 8px;
+      border: none;
+      background: #4a90e2;
+      color: #fff;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+    `;
+    btn.addEventListener('mouseenter', () => {
+      btn.style.background = '#5ba3f5';
+      btn.style.transform = 'scale(1.02)';
+    });
+    btn.addEventListener('mouseleave', () => {
+      btn.style.background = '#4a90e2';
+      btn.style.transform = 'scale(1)';
+    });
+    btn.addEventListener('click', () => {
+      addToCategory(tab, match.category, title, url, match.index);
+      document.body.removeChild(overlay);
+    });
+    buttonsContainer.appendChild(btn);
+  });
+  
+  // Add to default button
+  const defaultCat = state.defaults[tab];
+  const defaultBtn = document.createElement('button');
+  defaultBtn.textContent = `Add to ${defaultCat.toUpperCase()} (Default)`;
+  defaultBtn.style.cssText = `
+    padding: 10px;
+    border-radius: 8px;
+    border: 2px solid #4a90e2;
+    background: transparent;
+    color: #4a90e2;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s;
+  `;
+  defaultBtn.addEventListener('mouseenter', () => {
+    defaultBtn.style.background = '#4a90e2';
+    defaultBtn.style.color = '#fff';
+  });
+  defaultBtn.addEventListener('mouseleave', () => {
+    defaultBtn.style.background = 'transparent';
+    defaultBtn.style.color = '#4a90e2';
+  });
+  defaultBtn.addEventListener('click', () => {
+    addToCategory(tab, defaultCat, title, url, -1);
+    document.body.removeChild(overlay);
+  });
+  
+  // Cancel button
+  const cancelBtn = document.createElement('button');
+  cancelBtn.textContent = 'Cancel';
+  cancelBtn.style.cssText = `
+    padding: 10px;
+    border-radius: 8px;
+    border: none;
+    background: #e74c3c;
+    color: #fff;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s;
+    margin-top: 4px;
+  `;
+  cancelBtn.addEventListener('mouseenter', () => {
+    cancelBtn.style.background = '#c0392b';
+  });
+  cancelBtn.addEventListener('mouseleave', () => {
+    cancelBtn.style.background = '#e74c3c';
+  });
+  cancelBtn.addEventListener('click', () => {
+    document.body.removeChild(overlay);
+  });
+  
+  // Assemble dialog
+  dialog.appendChild(dialogTitle);
+  dialog.appendChild(message);
+  dialog.appendChild(matchesList);
+  buttonsContainer.appendChild(defaultBtn);
+  buttonsContainer.appendChild(cancelBtn);
+  dialog.appendChild(buttonsContainer);
+  overlay.appendChild(dialog);
+  document.body.appendChild(overlay);
+  
+  // Close on overlay click
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) {
+      document.body.removeChild(overlay);
+    }
+  });
+}
+
+// ===== NEW: ADD TO CATEGORY FUNCTION =====
+async function addToCategory(tab, category, title, url, insertAfterIndex) {
+  if(!state.entries[tab][category]) state.entries[tab][category] = [];
+  if (!state.entryUrls[tab]) state.entryUrls[tab] = {};
+  
+  // Save URL using title as key
+  state.entryUrls[tab][title] = url;
+  
+  // Insert after similar title or at end
+  if (insertAfterIndex >= 0) {
+    state.entries[tab][category].splice(insertAfterIndex + 1, 0, title);
+  } else {
+    state.entries[tab][category].push(title);
+  }
+  
+  // Save both entries and URLs
+  await saveEntries(tab, state.entries[tab]);
+  await saveEntryUrls(tab, state.entryUrls[tab]);
+  
+  // Make sure category is open
+  if(!state.openState[tab + '-' + category]) {
+    state.openState[tab + '-' + category] = true;
+    await Storage.set('openState', state.openState);
+  }
+  
+  renderTab(tab);
+  
+  // Scroll to the newly added item
+  setTimeout(() => {
+    const list = document.getElementById(`${tab}-${category}`);
+    if(list) {
+      const items = list.querySelectorAll('li');
+      const newItemIndex = insertAfterIndex >= 0 ? insertAfterIndex + 1 : items.length - 1;
+      const newItem = items[newItemIndex];
+      if(newItem) {
+        newItem.scrollIntoView({ 
+          behavior: 'smooth', 
+          block: 'center' 
+        });
+        // Highlight briefly
+        newItem.style.background = '#4a90e2';
+        setTimeout(() => {
+          newItem.style.background = '';
+        }, 800);
+      }
+    }
+  }, 350);
+}
+
+// ===== ADD ENTRY BUTTON (UPDATED - ONLY SHOW DIALOG IF NOT IN DEFAULT) =====
 document.getElementById('add-btn').addEventListener('click', async () => {
   const tab = state.currentTab;
   const defaultCat = state.defaults[tab];
@@ -911,59 +1688,20 @@ document.getElementById('add-btn').addEventListener('click', async () => {
     const title = buildSmartTitle(info);
     const url = currentTab.url;
     
-    if(!state.entries[tab][defaultCat]) state.entries[tab][defaultCat] = [];
+    // Check for similar titles across ALL categories
+    const matches = findSimilarTitleInAllCategories(tab, title);
     
-    // Initialize URL storage for this tab if needed
-    if (!state.entryUrls[tab]) state.entryUrls[tab] = {};
+    // Filter out matches that are in the default category
+    const nonDefaultMatches = matches.filter(match => match.category !== defaultCat);
     
-    // Save URL using title as key BEFORE adding to entries
-    state.entryUrls[tab][title] = url;
-    
-    // Smart grouping: find similar title and insert after it
-    const similarIndex = findSimilarTitleIndex(state.entries[tab][defaultCat], title);
-    let newIndex;
-    
-    if (similarIndex !== -1) {
-      // Insert right after the last similar title
-      newIndex = similarIndex + 1;
-      state.entries[tab][defaultCat].splice(newIndex, 0, title || 'New Entry');
+    if (nonDefaultMatches.length > 0) {
+      // Show dialog only if similar titles exist in OTHER categories
+      showCategoryChoiceDialog(tab, title, url, nonDefaultMatches);
     } else {
-      // No similar title found, add to end
-      newIndex = state.entries[tab][defaultCat].length;
-      state.entries[tab][defaultCat].push(title || 'New Entry');
+      // Either no matches, or matches only in default - add to default with smart grouping
+      const defaultCatIndex = matches.find(m => m.category === defaultCat)?.index ?? -1;
+      addToCategory(tab, defaultCat, title, url, defaultCatIndex);
     }
-    
-    // Save both entries and URLs
-    await saveEntries(tab, state.entries[tab]);
-    await saveEntryUrls(tab, state.entryUrls[tab]);
-    
-    // Make sure category is open
-    if(!state.openState[tab + '-' + defaultCat]) {
-      state.openState[tab + '-' + defaultCat] = true;
-      await Storage.set('openState', state.openState);
-    }
-    
-    renderTab(tab);
-    
-    // Scroll to the newly added item
-    setTimeout(() => {
-      const list = document.getElementById(`${tab}-${defaultCat}`);
-      if(list) {
-        const items = list.querySelectorAll('li');
-        const newItem = items[newIndex];
-        if(newItem) {
-          newItem.scrollIntoView({ 
-            behavior: 'smooth', 
-            block: 'center' 
-          });
-          // Highlight briefly
-          newItem.style.background = '#4a90e2';
-          setTimeout(() => {
-            newItem.style.background = '';
-          }, 800);
-        }
-      }
-    }, 350);
   });
 });
 
@@ -977,6 +1715,35 @@ const divider1 = document.createElement('div');
 divider1.className = 'settings-divider';
 document.querySelector('#settings-popup .settings-body').appendChild(divider1);
 
+// Keyboard shortcuts info section
+const shortcutsSection = document.createElement('div');
+shortcutsSection.style.marginTop = '8px';
+shortcutsSection.innerHTML = `
+  <div style="font-weight: 600; margin-bottom: 6px;">⌨️ Keyboard Shortcuts:</div>
+  <div style="font-size: 12px; color: #bbb; line-height: 1.6; margin-bottom: 4px;">
+    Set up keyboard shortcuts to:<br>
+    • Open the extension<br>
+    • Quick add current page (without opening popup)
+  </div>
+`;
+document.querySelector('#settings-popup .settings-body').appendChild(shortcutsSection);
+
+// Button to open Chrome shortcuts page
+const shortcutsBtn = document.createElement('button');
+shortcutsBtn.textContent = 'Customize Shortcuts';
+shortcutsBtn.style.marginTop = '8px';
+shortcutsBtn.style.width = '100%';
+shortcutsBtn.style.background = '#9b59b6';
+shortcutsBtn.addEventListener('click', () => {
+  chrome.tabs.create({ url: 'chrome://extensions/shortcuts' });
+});
+document.querySelector('#settings-popup .settings-body').appendChild(shortcutsBtn);
+
+// Second divider
+const divider2 = document.createElement('div');
+divider2.className = 'settings-divider';
+document.querySelector('#settings-popup .settings-body').appendChild(divider2);
+
 // Export button
 const exportBtn = document.createElement('button');
 exportBtn.textContent = 'Export Data';
@@ -987,6 +1754,8 @@ exportBtn.addEventListener('click', async () => {
     categories: state.categories,
     entries: state.entries,
     entryUrls: state.entryUrls,
+    entryColors: state.entryColors,
+    savedColors: state.savedColors,
     defaults: state.defaults,
     openState: state.openState,
     lastTab: state.currentTab
@@ -1034,6 +1803,8 @@ fileInput.addEventListener('change', (e) => {
         state.categories = data.categories;
         state.entries = data.entries;
         state.entryUrls = data.entryUrls || {};
+        state.entryColors = data.entryColors || {};
+        state.savedColors = data.savedColors || [];
         state.defaults = data.defaults || {};
         state.openState = data.openState || {};
         state.currentTab = data.lastTab || 'anime';
@@ -1041,13 +1812,15 @@ fileInput.addEventListener('change', (e) => {
         // Save to storage
         const updates = {
           'openState': state.openState,
-          'lastTab': state.currentTab
+          'lastTab': state.currentTab,
+          'savedColors': state.savedColors
         };
         
         ['anime','manga','fiction','misc'].forEach(tab => {
           updates[tab+'-categories'] = state.categories[tab];
           updates[tab+'-entries'] = state.entries[tab];
           updates[tab+'-urls'] = state.entryUrls[tab] || {};
+          updates[tab+'-colors'] = state.entryColors[tab] || {};
           updates[tab+'-default'] = state.defaults[tab];
         });
         
@@ -1067,10 +1840,10 @@ fileInput.addEventListener('change', (e) => {
 document.querySelector('#settings-popup .settings-body').appendChild(importBtn);
 document.querySelector('#settings-popup .settings-body').appendChild(fileInput);
 
-// Second divider
-const divider2 = document.createElement('div');
-divider2.className = 'settings-divider';
-document.querySelector('#settings-popup .settings-body').appendChild(divider2);
+// Third divider
+const divider3 = document.createElement('div');
+divider3.className = 'settings-divider';
+document.querySelector('#settings-popup .settings-body').appendChild(divider3);
 
 // Reset button
 const resetBtn = document.createElement('button');

@@ -149,6 +149,20 @@ body {
 }
 .default-btn.default { color: red; }
 
+/* COLOR PICKER POPUP */
+.color-picker-popup {
+  position: fixed;
+  background: #2a2b33;
+  border-radius: 8px;
+  padding: 12px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+  z-index: 9999;
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  width: 200px;
+}
+
 /* BOTTOM ACTION BAR */
 #bottom-bar {
   display: flex;

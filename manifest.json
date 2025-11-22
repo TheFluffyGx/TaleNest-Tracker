@@ -1,13 +1,18 @@
 {
   "manifest_version": 3,
   "name": "TaleNest Tracker",
-  "version": "0.3",
-  "description": "Track your anime, manga, and fiction progress in one cozy place.",
+  "version": "3.0.0",
+  "description": "Track your anime, manga, and fiction progress in one cozy place with smart grouping, URL tracking, and cross-category detection.",
   "permissions": ["storage", "tabs", "activeTab", "scripting"],
   "action": {
     "default_popup": "popup.html",
     "default_icon": {
       "128": "icons/icon128.png"
+    }
+  },
+  "commands": {
+    "quick-add": {
+      "description": "Quick add current page"
     }
   },
   "background": {
